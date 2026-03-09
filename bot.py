@@ -29,7 +29,7 @@ def is_authorized(update: Update) -> bool:
 
 
 async def transcribe_audio(file_path: str) -> str:
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-2.0-flash")
     uploaded = genai.upload_file(file_path, mime_type="audio/ogg")
     response = model.generate_content([
         uploaded,
