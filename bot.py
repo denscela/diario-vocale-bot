@@ -1,8 +1,8 @@
 import os
 import logging
 import tempfile
-from telegram import Update
-from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 import google.generativeai as genai
 
 # ─── Logging ───────────────────────────────────────────────────────────────────
@@ -56,12 +56,10 @@ async def transcribe_and_title(file_path: str, mime_type: str = "audio/ogg") -> 
     for line in text.split("\n"):
         if line.startswith("TITOLO:"):
             titolo = line.replace("TITOLO:", "").strip()
-        elif line.startswith("TRASCRIZIONE:"):
-            trascrizione = line.replace("TRASCRIZIONE:", "").strip()
-            # Prende tutto il testo dopo TRASCRIZIONE: anche su più righe
-            idx = text.find("TRASCRIZIONE:")
-            if idx != -1:
-                trascrizione = text[idx + len("TRASCRIZIONE:"):].strip()
+
+    idx = text.find("TRASCRIZIONE:")
+    if idx != -1:
+        trascrizione = text[idx + len("TRASCRIZIONE:"):].strip()
 
     return titolo, trascrizione
 
@@ -87,7 +85,19 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE,
         else:
             risposta = f"📝 {trascrizione}"
 
-        await msg.edit_text(risposta, parse_mode="Markdown")
+        # Bottoni inline
+        keyboard = [
+            [
+                InlineKeyboardButton("📋 Copia testo", callback_data=f"copia|{trascrizione[:200]}"),
+                InlineKeyboardButton("💾 Saved Messages", callback_data=f"saved|{titolo}|{trascrizione[:200]}")
+            ]
+        ]
+        # Salva testo completo nel context per recuperarlo dopo
+        context.bot_data[f"testo_{msg.message_id}"] = trascrizione
+        context.bot_data[f"titolo_{msg.message_id}"] = titolo
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await msg.edit_text(risposta, parse_mode="Markdown", reply_markup=reply_markup)
 
     except Exception as e:
         logger.error(f"Errore: {e}", exc_info=True)
@@ -100,6 +110,38 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 pass
 
 
+# ─── Callback bottoni ──────────────────────────────────────────────────────────
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    msg_id = query.message.message_id
+
+    # Recupera testo completo dal context
+    testo = context.bot_data.get(f"testo_{msg_id}", "")
+    titolo = context.bot_data.get(f"titolo_{msg_id}", "")
+
+    if data.startswith("copia|"):
+        # Reinvia il testo puro come nuovo messaggio (facile da copiare con un tap)
+        await query.message.reply_text(
+            testo,
+            quote=False
+        )
+        await query.answer("Testo inviato — tieni premuto per copiarlo! 📋", show_alert=False)
+
+    elif data.startswith("saved|"):
+        # Inoltra ai Saved Messages dell'utente
+        await context.bot.send_message(
+            chat_id=query.from_user.id,
+            text=f"🏷️ *{titolo}*\n\n📝 {testo}" if titolo else f"📝 {testo}",
+            parse_mode="Markdown"
+        )
+        # Invia anche ai Saved Messages tramite forward
+        await query.answer("Salvato nei tuoi Saved Messages! 💾", show_alert=True)
+
+
 # ─── Handlers ──────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -108,7 +150,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Mandami:\n"
         "• Un *vocale* registrato in Telegram 🎙️\n"
         "• Un *file audio* allegato (mp3, m4a, wav, ogg…) 📎\n\n"
-        "Trascrivo tutto e genero un titolo automatico.",
+        "Trascrivo tutto, genero un titolo e trovi i bottoni per copiare o salvare.",
         parse_mode="Markdown",
     )
 
@@ -161,6 +203,7 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.AUDIO, handle_audio))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     logger.info("🤖 Bot avviato — in ascolto…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
