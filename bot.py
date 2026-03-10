@@ -30,6 +30,9 @@ AUDIO_EXTENSIONS = {
     ".webm": "audio/webm",
 }
 
+# Dizionario in memoria: msg_id -> {titolo, testo}
+TRASCRIZIONI: dict[int, dict] = {}
+
 # ─── Helpers ───────────────────────────────────────────────────────────────────
 
 def is_authorized(update: Update) -> bool:
@@ -85,17 +88,14 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE,
         else:
             risposta = f"📝 {trascrizione}"
 
-        # Bottoni inline
-        keyboard = [
-            [
-                InlineKeyboardButton("📋 Copia testo", callback_data=f"copia|{trascrizione[:200]}"),
-                InlineKeyboardButton("💾 Saved Messages", callback_data=f"saved|{titolo}|{trascrizione[:200]}")
-            ]
-        ]
-        # Salva testo completo nel context per recuperarlo dopo
-        context.bot_data[f"testo_{msg.message_id}"] = trascrizione
-        context.bot_data[f"titolo_{msg.message_id}"] = titolo
+        # Salva testo completo indicizzato per msg_id
+        TRASCRIZIONI[msg.message_id] = {"titolo": titolo, "testo": trascrizione}
 
+        # callback_data è solo "copia:<msg_id>" o "saved:<msg_id>" — sempre sotto 64 char
+        keyboard = [[
+            InlineKeyboardButton("📋 Copia testo",    callback_data=f"copia:{msg.message_id}"),
+            InlineKeyboardButton("💾 Saved Messages", callback_data=f"saved:{msg.message_id}"),
+        ]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await msg.edit_text(risposta, parse_mode="Markdown", reply_markup=reply_markup)
 
@@ -116,30 +116,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    data = query.data
-    msg_id = query.message.message_id
+    action, msg_id_str = query.data.split(":", 1)
+    msg_id = int(msg_id_str)
 
-    # Recupera testo completo dal context
-    testo = context.bot_data.get(f"testo_{msg_id}", "")
-    titolo = context.bot_data.get(f"titolo_{msg_id}", "")
+    dati = TRASCRIZIONI.get(msg_id)
+    if not dati:
+        await query.answer("⚠️ Testo non più disponibile (bot riavviato?)", show_alert=True)
+        return
 
-    if data.startswith("copia|"):
-        # Reinvia il testo puro come nuovo messaggio (facile da copiare con un tap)
-        await query.message.reply_text(
-            testo,
-            quote=False
-        )
-        await query.answer("Testo inviato — tieni premuto per copiarlo! 📋", show_alert=False)
+    titolo = dati["titolo"]
+    testo  = dati["testo"]
 
-    elif data.startswith("saved|"):
-        # Inoltra ai Saved Messages dell'utente
+    if action == "copia":
+        # Reinvia il testo puro — tieni premuto per copiarlo
+        await query.message.reply_text(testo, quote=False)
+
+    elif action == "saved":
+        # Manda ai Saved Messages (chat con se stesso)
+        testo_completo = f"🏷️ *{titolo}*\n\n📝 {testo}" if titolo else f"📝 {testo}"
         await context.bot.send_message(
             chat_id=query.from_user.id,
-            text=f"🏷️ *{titolo}*\n\n📝 {testo}" if titolo else f"📝 {testo}",
+            text=testo_completo,
             parse_mode="Markdown"
         )
-        # Invia anche ai Saved Messages tramite forward
-        await query.answer("Salvato nei tuoi Saved Messages! 💾", show_alert=True)
+        await query.answer("✅ Salvato nei tuoi Saved Messages!", show_alert=True)
 
 
 # ─── Handlers ──────────────────────────────────────────────────────────────────
