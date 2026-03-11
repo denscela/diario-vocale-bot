@@ -68,7 +68,7 @@ def is_authorized(update: Update) -> bool:
 
 
 async def transcribe_and_title(file_path: str, mime_type: str = "audio/ogg") -> tuple[str, str]:
-    model = genai.GenerativeModel("gemini-3-flash-preview")
+    model = genai.GenerativeModel("gemini-2.5-flash")
     uploaded = genai.upload_file(file_path, mime_type=mime_type)
     response = model.generate_content([
         uploaded,
