@@ -5,14 +5,9 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Reactio
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 import google.generativeai as genai
 
-# ─── Logging ───────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ─── Config ────────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
 GEMINI_API_KEY  = os.environ["GEMINI_API_KEY"]
 ALLOWED_USER_ID = int(os.environ.get("ALLOWED_USER_ID", "0"))
@@ -30,10 +25,27 @@ AUDIO_EXTENSIONS = {
     ".webm": "audio/webm",
 }
 
-# Dizionario in memoria: msg_id -> {titolo, testo}
 TRASCRIZIONI: dict[int, dict] = {}
+# Tiene traccia delle reaction attive per ogni messaggio: msg_id -> set di emoji
+REACTIONS: dict[int, set] = {}
 
-# ─── Helpers ───────────────────────────────────────────────────────────────────
+BOTTONI = [
+    ("👍", "letto"),
+    ("✅", "fatto"),
+    ("⭐", "importante"),
+    ("🗑️", "ignora"),
+]
+
+def build_keyboard(msg_id: int) -> InlineKeyboardMarkup:
+    """Costruisce la tastiera mostrando quali bottoni sono attivi."""
+    active = REACTIONS.get(msg_id, set())
+    buttons = []
+    for emoji, label in BOTTONI:
+        # Se attivo aggiungi un cerchio per indicare lo stato
+        text = f"● {emoji}" if emoji in active else emoji
+        buttons.append(InlineKeyboardButton(text, callback_data=f"react:{emoji}:{msg_id}"))
+    return InlineKeyboardMarkup([buttons])
+
 
 def is_authorized(update: Update) -> bool:
     if ALLOWED_USER_ID == 0:
@@ -52,18 +64,14 @@ async def transcribe_and_title(file_path: str, mime_type: str = "audio/ogg") -> 
         "Non aggiungere altro."
     ])
     text = response.text.strip()
-
     titolo = ""
     trascrizione = text
-
     for line in text.split("\n"):
         if line.startswith("TITOLO:"):
             titolo = line.replace("TITOLO:", "").strip()
-
     idx = text.find("TRASCRIZIONE:")
     if idx != -1:
         trascrizione = text[idx + len("TRASCRIZIONE:"):].strip()
-
     return titolo, trascrizione
 
 
@@ -89,15 +97,9 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE,
             risposta = f"📝 {trascrizione}"
 
         TRASCRIZIONI[msg.message_id] = {"titolo": titolo, "testo": trascrizione}
+        REACTIONS[msg.message_id] = set()
 
-        keyboard = [[
-            InlineKeyboardButton("👍", callback_data=f"react:👍:{msg.message_id}"),
-            InlineKeyboardButton("✅", callback_data=f"react:✅:{msg.message_id}"),
-            InlineKeyboardButton("⭐", callback_data=f"react:⭐:{msg.message_id}"),
-            InlineKeyboardButton("🗑️", callback_data=f"react:🗑️:{msg.message_id}"),
-        ]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await msg.edit_text(risposta, parse_mode="Markdown", reply_markup=reply_markup)
+        await msg.edit_text(risposta, parse_mode="Markdown", reply_markup=build_keyboard(msg.message_id))
 
     except Exception as e:
         logger.error(f"Errore: {e}", exc_info=True)
@@ -110,75 +112,62 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 pass
 
 
-# ─── Callback bottoni ──────────────────────────────────────────────────────────
-
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     parts = query.data.split(":", 2)
-    action = parts[0]
     emoji  = parts[1]
     msg_id = int(parts[2])
 
-    if action == "react":
-        # Prova reaction nativa Telegram
-        reaction_ok = False
-        try:
-            await context.bot.set_message_reaction(
-                chat_id=query.message.chat_id,
-                message_id=msg_id,
-                reaction=[ReactionTypeEmoji(emoji=emoji)],
-                is_big=False
-            )
-            reaction_ok = True
-        except Exception as e:
-            logger.warning(f"Reaction nativa non supportata: {e}")
+    # Inizializza se non esiste (es. dopo riavvio bot)
+    if msg_id not in REACTIONS:
+        REACTIONS[msg_id] = set()
 
-        if not reaction_ok:
-            # Piano B: modifica il testo aggiungendo l'emoji in cima
-            dati = TRASCRIZIONI.get(msg_id)
-            if dati:
-                titolo = dati["titolo"]
-                testo  = dati["testo"]
-                testo_aggiornato = f"{emoji} *{titolo}*\n\n📝 {testo}" if titolo else f"{emoji} 📝 {testo}"
-                try:
-                    await query.message.edit_text(testo_aggiornato, parse_mode="Markdown")
-                except Exception as e2:
-                    logger.error(f"Errore piano B: {e2}")
-        else:
-            # Reaction riuscita: rimuovi i bottoni dal messaggio
-            dati = TRASCRIZIONI.get(msg_id)
-            if dati:
-                titolo = dati["titolo"]
-                testo  = dati["testo"]
-                testo_finale = f"🏷️ *{titolo}*\n\n📝 {testo}" if titolo else f"📝 {testo}"
-                try:
-                    await query.message.edit_text(testo_finale, parse_mode="Markdown")
-                except Exception:
-                    pass
+    # Toggle: se già attiva la rimuove, altrimenti la aggiunge
+    if emoji in REACTIONS[msg_id]:
+        REACTIONS[msg_id].discard(emoji)
+    else:
+        REACTIONS[msg_id].add(emoji)
 
+    # Prova a impostare le reaction native Telegram (potrebbero non funzionare in chat privata)
+    active = REACTIONS[msg_id]
+    try:
+        reaction_list = [ReactionTypeEmoji(emoji=e) for e in active]
+        await context.bot.set_message_reaction(
+            chat_id=query.message.chat_id,
+            message_id=msg_id,
+            reaction=reaction_list,
+            is_big=False
+        )
+    except Exception as e:
+        logger.warning(f"Reaction nativa non supportata: {e}")
 
-# ─── Handlers ──────────────────────────────────────────────────────────────────
+    # Aggiorna sempre la tastiera per riflettere lo stato attuale
+    try:
+        await query.message.edit_reply_markup(reply_markup=build_keyboard(msg_id))
+    except Exception as e:
+        logger.error(f"Errore aggiornamento tastiera: {e}")
+
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 *Diario Vocale attivo!*\n\n"
-        "Mandami:\n"
-        "• Un *vocale* registrato in Telegram 🎙️\n"
-        "• Un *file audio* allegato (mp3, m4a, wav, ogg…) 📎\n\n"
-        "Trascrivo tutto, genero un titolo e puoi taggare ogni nota con 👍 ✅ ⭐ 🗑️",
+        "Mandami un vocale 🎙️ o un file audio 📎\n\n"
+        "Dopo la trascrizione puoi taggare ogni nota:\n"
+        "👍 letto/preso nota\n"
+        "✅ fatto/completato\n"
+        "⭐ importante, da rivedere\n"
+        "🗑️ da ignorare\n\n"
+        "Puoi attivare più tag insieme e cambiarli quando vuoi!",
         parse_mode="Markdown",
     )
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    voice = update.message.voice
     await process_audio(update, context,
-                        file_id=voice.file_id,
-                        suffix=".ogg",
-                        mime_type="audio/ogg",
-                        label="vocale")
+                        file_id=update.message.voice.file_id,
+                        suffix=".ogg", mime_type="audio/ogg", label="vocale")
 
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -188,8 +177,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mime_type = AUDIO_EXTENSIONS.get(ext, "audio/mpeg")
     await process_audio(update, context,
                         file_id=audio.file_id,
-                        suffix=ext or ".mp3",
-                        mime_type=mime_type,
+                        suffix=ext or ".mp3", mime_type=mime_type,
                         label=f"file `{filename}`")
 
 
@@ -204,15 +192,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         return
-    mime_type = AUDIO_EXTENSIONS[ext]
     await process_audio(update, context,
                         file_id=doc.file_id,
-                        suffix=ext,
-                        mime_type=mime_type,
+                        suffix=ext, mime_type=AUDIO_EXTENSIONS[ext],
                         label=f"file `{filename}`")
 
-
-# ─── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
