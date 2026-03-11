@@ -1,7 +1,7 @@
 import os
 import logging
 import tempfile
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReactionTypeEmoji
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 import google.generativeai as genai
 
@@ -25,26 +25,40 @@ AUDIO_EXTENSIONS = {
     ".webm": "audio/webm",
 }
 
+# msg_id -> {titolo, testo, stato, priorita}
+# stato: None | "👍" | "✅"
+# priorita: None | "⭐" | "🗑️"
 TRASCRIZIONI: dict[int, dict] = {}
-# Tiene traccia delle reaction attive per ogni messaggio: msg_id -> set di emoji
-REACTIONS: dict[int, set] = {}
 
-BOTTONI = [
-    ("👍", "letto"),
-    ("✅", "fatto"),
-    ("⭐", "importante"),
-    ("🗑️", "ignora"),
-]
 
 def build_keyboard(msg_id: int) -> InlineKeyboardMarkup:
-    """Costruisce la tastiera mostrando quali bottoni sono attivi."""
-    active = REACTIONS.get(msg_id, set())
-    buttons = []
-    for emoji, label in BOTTONI:
-        # Se attivo aggiungi un cerchio per indicare lo stato
-        text = f"● {emoji}" if emoji in active else emoji
-        buttons.append(InlineKeyboardButton(text, callback_data=f"react:{emoji}:{msg_id}"))
-    return InlineKeyboardMarkup([buttons])
+    dati = TRASCRIZIONI.get(msg_id, {})
+    stato    = dati.get("stato")
+    priorita = dati.get("priorita")
+
+    def btn(emoji, current):
+        prefix = "● " if emoji == current else ""
+        return InlineKeyboardButton(f"{prefix}{emoji}", callback_data=f"tag:{emoji}:{msg_id}")
+
+    row1 = [btn("👍", stato),    btn("✅", stato)]
+    row2 = [btn("⭐", priorita), btn("🗑️", priorita)]
+    return InlineKeyboardMarkup([row1, row2])
+
+
+def build_testo(msg_id: int) -> str:
+    dati     = TRASCRIZIONI.get(msg_id, {})
+    titolo   = dati.get("titolo", "")
+    testo    = dati.get("testo", "")
+    stato    = dati.get("stato", "")
+    priorita = dati.get("priorita", "")
+
+    badge = "".join(filter(None, [stato, priorita]))
+    if badge:
+        header = f"{badge} *{titolo}*" if titolo else badge
+    else:
+        header = f"🏷️ *{titolo}*" if titolo else ""
+
+    return f"{header}\n\n📝 {testo}" if header else f"📝 {testo}"
 
 
 def is_authorized(update: Update) -> bool:
@@ -91,15 +105,18 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
         titolo, trascrizione = await transcribe_and_title(tmp_path, mime_type)
 
-        if titolo:
-            risposta = f"🏷️ *{titolo}*\n\n📝 {trascrizione}"
-        else:
-            risposta = f"📝 {trascrizione}"
+        TRASCRIZIONI[msg.message_id] = {
+            "titolo": titolo,
+            "testo": trascrizione,
+            "stato": None,
+            "priorita": None,
+        }
 
-        TRASCRIZIONI[msg.message_id] = {"titolo": titolo, "testo": trascrizione}
-        REACTIONS[msg.message_id] = set()
-
-        await msg.edit_text(risposta, parse_mode="Markdown", reply_markup=build_keyboard(msg.message_id))
+        await msg.edit_text(
+            build_testo(msg.message_id),
+            parse_mode="Markdown",
+            reply_markup=build_keyboard(msg.message_id)
+        )
 
     except Exception as e:
         logger.error(f"Errore: {e}", exc_info=True)
@@ -116,38 +133,38 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    parts = query.data.split(":", 2)
-    emoji  = parts[1]
-    msg_id = int(parts[2])
+    _, emoji, msg_id_str = query.data.split(":", 2)
+    msg_id = int(msg_id_str)
 
-    # Inizializza se non esiste (es. dopo riavvio bot)
-    if msg_id not in REACTIONS:
-        REACTIONS[msg_id] = set()
+    if msg_id not in TRASCRIZIONI:
+        await query.answer("⚠️ Dati non disponibili (bot riavviato?)", show_alert=True)
+        return
 
-    # Toggle: se già attiva la rimuove, altrimenti la aggiunge
-    if emoji in REACTIONS[msg_id]:
-        REACTIONS[msg_id].discard(emoji)
-    else:
-        REACTIONS[msg_id].add(emoji)
+    dati = TRASCRIZIONI[msg_id]
 
-    # Prova a impostare le reaction native Telegram (potrebbero non funzionare in chat privata)
-    active = REACTIONS[msg_id]
+    # Gruppo 1: stato (👍 / ✅) — si escludono
+    if emoji in ("👍", "✅"):
+        if dati["stato"] == emoji:
+            dati["stato"] = None  # toggle off
+        else:
+            dati["stato"] = emoji
+
+    # Gruppo 2: priorità (⭐ / 🗑️) — si escludono
+    elif emoji in ("⭐", "🗑️"):
+        if dati["priorita"] == emoji:
+            dati["priorita"] = None  # toggle off
+        else:
+            dati["priorita"] = emoji
+
+    # Aggiorna testo + bottoni
     try:
-        reaction_list = [ReactionTypeEmoji(emoji=e) for e in active]
-        await context.bot.set_message_reaction(
-            chat_id=query.message.chat_id,
-            message_id=msg_id,
-            reaction=reaction_list,
-            is_big=False
+        await query.message.edit_text(
+            build_testo(msg_id),
+            parse_mode="Markdown",
+            reply_markup=build_keyboard(msg_id)
         )
     except Exception as e:
-        logger.warning(f"Reaction nativa non supportata: {e}")
-
-    # Aggiorna sempre la tastiera per riflettere lo stato attuale
-    try:
-        await query.message.edit_reply_markup(reply_markup=build_keyboard(msg_id))
-    except Exception as e:
-        logger.error(f"Errore aggiornamento tastiera: {e}")
+        logger.error(f"Errore aggiornamento: {e}")
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -155,11 +172,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 *Diario Vocale attivo!*\n\n"
         "Mandami un vocale 🎙️ o un file audio 📎\n\n"
         "Dopo la trascrizione puoi taggare ogni nota:\n"
-        "👍 letto/preso nota\n"
-        "✅ fatto/completato\n"
-        "⭐ importante, da rivedere\n"
-        "🗑️ da ignorare\n\n"
-        "Puoi attivare più tag insieme e cambiarli quando vuoi!",
+        "👍 letto  |  ✅ fatto\n"
+        "⭐ importante  |  🗑️ ignora\n\n"
+        "I bottoni rimangono su ogni messaggio — puoi cambiarli quando vuoi!",
         parse_mode="Markdown",
     )
 
