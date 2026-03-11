@@ -26,13 +26,13 @@ AUDIO_EXTENSIONS = {
 }
 
 # msg_id -> {titolo, testo, stato, priorita}
-# stato: None | "👍" | "✅"
+# stato:    None | "👍" | "✅"
 # priorita: None | "⭐" | "🗑️"
 TRASCRIZIONI: dict[int, dict] = {}
 
 
 def build_keyboard(msg_id: int) -> InlineKeyboardMarkup:
-    dati = TRASCRIZIONI.get(msg_id, {})
+    dati     = TRASCRIZIONI.get(msg_id, {})
     stato    = dati.get("stato")
     priorita = dati.get("priorita")
 
@@ -49,16 +49,16 @@ def build_testo(msg_id: int) -> str:
     dati     = TRASCRIZIONI.get(msg_id, {})
     titolo   = dati.get("titolo", "")
     testo    = dati.get("testo", "")
-    stato    = dati.get("stato", "")
-    priorita = dati.get("priorita", "")
+    stato    = dati.get("stato") or ""
+    priorita = dati.get("priorita") or ""
 
+    # Badge emoji davanti al testo (ricercabile)
     badge = "".join(filter(None, [stato, priorita]))
-    if badge:
-        header = f"{badge} *{titolo}*" if titolo else badge
-    else:
-        header = f"🏷️ *{titolo}*" if titolo else ""
+    riga_testo = f"{badge} {testo}" if badge else testo
 
-    return f"{header}\n\n📝 {testo}" if header else f"📝 {testo}"
+    if titolo:
+        return f"🏷️ *{titolo}*\n\n{riga_testo}"
+    return riga_testo
 
 
 def is_authorized(update: Update) -> bool:
@@ -144,19 +144,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Gruppo 1: stato (👍 / ✅) — si escludono
     if emoji in ("👍", "✅"):
-        if dati["stato"] == emoji:
-            dati["stato"] = None  # toggle off
-        else:
-            dati["stato"] = emoji
+        dati["stato"] = None if dati["stato"] == emoji else emoji
 
     # Gruppo 2: priorità (⭐ / 🗑️) — si escludono
     elif emoji in ("⭐", "🗑️"):
-        if dati["priorita"] == emoji:
-            dati["priorita"] = None  # toggle off
-        else:
-            dati["priorita"] = emoji
+        dati["priorita"] = None if dati["priorita"] == emoji else emoji
 
-    # Aggiorna testo + bottoni
     try:
         await query.message.edit_text(
             build_testo(msg_id),
@@ -174,7 +167,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Dopo la trascrizione puoi taggare ogni nota:\n"
         "👍 letto  |  ✅ fatto\n"
         "⭐ importante  |  🗑️ ignora\n\n"
-        "I bottoni rimangono su ogni messaggio — puoi cambiarli quando vuoi!",
+        "I tag appaiono davanti al testo — cercali direttamente in chat!",
         parse_mode="Markdown",
     )
 
