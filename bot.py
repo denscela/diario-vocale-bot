@@ -1,7 +1,7 @@
 import os
 import logging
 import tempfile
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReactionTypeEmoji
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 import google.generativeai as genai
 
@@ -88,13 +88,13 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE,
         else:
             risposta = f"📝 {trascrizione}"
 
-        # Salva testo completo indicizzato per msg_id
         TRASCRIZIONI[msg.message_id] = {"titolo": titolo, "testo": trascrizione}
 
-        # callback_data è solo "copia:<msg_id>" o "saved:<msg_id>" — sempre sotto 64 char
         keyboard = [[
-            InlineKeyboardButton("📋 Copia testo",    callback_data=f"copia:{msg.message_id}"),
-            InlineKeyboardButton("💾 Saved Messages", callback_data=f"saved:{msg.message_id}"),
+            InlineKeyboardButton("👍", callback_data=f"react:👍:{msg.message_id}"),
+            InlineKeyboardButton("✅", callback_data=f"react:✅:{msg.message_id}"),
+            InlineKeyboardButton("⭐", callback_data=f"react:⭐:{msg.message_id}"),
+            InlineKeyboardButton("🗑️", callback_data=f"react:🗑️:{msg.message_id}"),
         ]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await msg.edit_text(risposta, parse_mode="Markdown", reply_markup=reply_markup)
@@ -116,30 +116,47 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    action, msg_id_str = query.data.split(":", 1)
-    msg_id = int(msg_id_str)
+    parts = query.data.split(":", 2)
+    action = parts[0]
+    emoji  = parts[1]
+    msg_id = int(parts[2])
 
-    dati = TRASCRIZIONI.get(msg_id)
-    if not dati:
-        await query.answer("⚠️ Testo non più disponibile (bot riavviato?)", show_alert=True)
-        return
+    if action == "react":
+        # Prova reaction nativa Telegram
+        reaction_ok = False
+        try:
+            await context.bot.set_message_reaction(
+                chat_id=query.message.chat_id,
+                message_id=msg_id,
+                reaction=[ReactionTypeEmoji(emoji=emoji)],
+                is_big=False
+            )
+            reaction_ok = True
+        except Exception as e:
+            logger.warning(f"Reaction nativa non supportata: {e}")
 
-    titolo = dati["titolo"]
-    testo  = dati["testo"]
-
-    if action == "copia":
-        # Reinvia il testo puro — tieni premuto per copiarlo
-        await query.message.reply_text(testo, quote=False)
-
-    elif action == "saved":
-        # Manda ai Saved Messages (chat con se stesso)
-        testo_completo = f"🏷️ *{titolo}*\n\n📝 {testo}" if titolo else f"📝 {testo}"
-        await context.bot.send_message(
-            chat_id=query.from_user.id,
-            text=testo_completo,
-            parse_mode="Markdown"
-        )
-        await query.answer("✅ Salvato nei tuoi Saved Messages!", show_alert=True)
+        if not reaction_ok:
+            # Piano B: modifica il testo aggiungendo l'emoji in cima
+            dati = TRASCRIZIONI.get(msg_id)
+            if dati:
+                titolo = dati["titolo"]
+                testo  = dati["testo"]
+                testo_aggiornato = f"{emoji} *{titolo}*\n\n📝 {testo}" if titolo else f"{emoji} 📝 {testo}"
+                try:
+                    await query.message.edit_text(testo_aggiornato, parse_mode="Markdown")
+                except Exception as e2:
+                    logger.error(f"Errore piano B: {e2}")
+        else:
+            # Reaction riuscita: rimuovi i bottoni dal messaggio
+            dati = TRASCRIZIONI.get(msg_id)
+            if dati:
+                titolo = dati["titolo"]
+                testo  = dati["testo"]
+                testo_finale = f"🏷️ *{titolo}*\n\n📝 {testo}" if titolo else f"📝 {testo}"
+                try:
+                    await query.message.edit_text(testo_finale, parse_mode="Markdown")
+                except Exception:
+                    pass
 
 
 # ─── Handlers ──────────────────────────────────────────────────────────────────
@@ -150,7 +167,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Mandami:\n"
         "• Un *vocale* registrato in Telegram 🎙️\n"
         "• Un *file audio* allegato (mp3, m4a, wav, ogg…) 📎\n\n"
-        "Trascrivo tutto, genero un titolo e trovi i bottoni per copiare o salvare.",
+        "Trascrivo tutto, genero un titolo e puoi taggare ogni nota con 👍 ✅ ⭐ 🗑️",
         parse_mode="Markdown",
     )
 
