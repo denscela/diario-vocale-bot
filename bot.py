@@ -1,7 +1,7 @@
 import os
 import logging
 import tempfile
-import requests
+import httpx
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
@@ -35,8 +35,9 @@ TRASCRIZIONI: dict[int, dict] = {}
 
 # ─── Notion ──────────────────────────────────────────────────────────────────
 
-def crea_pagina_notion(titolo: str, testo: str):
+async def crea_pagina_notion(titolo: str, testo: str):
     """Crea una sotto-pagina in NOTION_PAGE_ID con titolo data+titolo e corpo testo."""
+    logger.info(f"Notion: inizio. TOKEN={'OK' if NOTION_TOKEN else 'MANCANTE'} PAGE_ID={'OK' if NOTION_PAGE_ID else 'MANCANTE'}")
     if not NOTION_TOKEN or not NOTION_PAGE_ID:
         logger.warning("Notion non configurato, salto creazione pagina.")
         return
@@ -68,11 +69,12 @@ def crea_pagina_notion(titolo: str, testo: str):
         ]
     }
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=10)
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post("https://api.notion.com/v1/pages", headers=headers, json=payload)
         if r.status_code == 200:
-            logger.info(f"Pagina Notion creata: {titolo_pagina}")
+            logger.info(f"✅ Pagina Notion creata: {titolo_pagina}")
         else:
-            logger.error(f"Errore Notion {r.status_code}: {r.text}")
+            logger.error(f"❌ Errore Notion {r.status_code}: {r.text}")
     except Exception as e:
         logger.error(f"Eccezione Notion: {e}")
 
@@ -163,8 +165,8 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE,
             "priorita": None,
         }
 
-        # Salva su Notion in background
-        crea_pagina_notion(titolo, trascrizione)
+        # Salva su Notion (asincrono)
+        await crea_pagina_notion(titolo, trascrizione)
 
         await msg.edit_text(
             build_testo(msg.message_id),
