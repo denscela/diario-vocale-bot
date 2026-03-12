@@ -105,9 +105,14 @@ def build_testo(msg_id: int) -> str:
     badge = "".join(filter(None, [stato, priorita]))
     riga_testo = f"{badge} {testo}" if badge else testo
 
-    if titolo:
-        return f"🏷️ *{titolo}*\n\n{riga_testo}"
-    return riga_testo
+    header = f"🏷️ *{titolo}*\n\n" if titolo else ""
+    nota = "\n\n…_testo completo su Notion_ 📓"
+    MAX = 4096 - len(header) - len(nota)
+
+    if len(riga_testo) > MAX:
+        riga_testo = riga_testo[:MAX] + nota
+
+    return f"{header}{riga_testo}" if titolo else riga_testo
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
