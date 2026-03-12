@@ -1,6 +1,8 @@
 import os
 import logging
 import tempfile
+import requests
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 import google.generativeai as genai
@@ -11,6 +13,8 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
 GEMINI_API_KEY  = os.environ["GEMINI_API_KEY"]
 ALLOWED_USER_ID = int(os.environ.get("ALLOWED_USER_ID", "0"))
+NOTION_TOKEN    = os.environ.get("NOTION_TOKEN", "")
+NOTION_PAGE_ID  = os.environ.get("NOTION_PAGE_ID", "")
 
 genai.configure(api_key=GEMINI_API_KEY)
 
@@ -26,10 +30,54 @@ AUDIO_EXTENSIONS = {
 }
 
 # msg_id -> {titolo, testo, stato, priorita}
-# stato:    None | "👍" | "✅"
-# priorita: None | "⭐" | "🗑️"
 TRASCRIZIONI: dict[int, dict] = {}
 
+
+# ─── Notion ──────────────────────────────────────────────────────────────────
+
+def crea_pagina_notion(titolo: str, testo: str):
+    """Crea una sotto-pagina in NOTION_PAGE_ID con titolo data+titolo e corpo testo."""
+    if not NOTION_TOKEN or not NOTION_PAGE_ID:
+        logger.warning("Notion non configurato, salto creazione pagina.")
+        return
+
+    oggi = datetime.now().strftime("%Y-%m-%d")
+    titolo_pagina = f"{oggi} – {titolo}" if titolo else oggi
+
+    url = "https://api.notion.com/v1/pages"
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+    payload = {
+        "parent": {"page_id": NOTION_PAGE_ID},
+        "properties": {
+            "title": {
+                "title": [{"text": {"content": titolo_pagina}}]
+            }
+        },
+        "children": [
+            {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{"text": {"content": testo}}]
+                }
+            }
+        ]
+    }
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=10)
+        if r.status_code == 200:
+            logger.info(f"Pagina Notion creata: {titolo_pagina}")
+        else:
+            logger.error(f"Errore Notion {r.status_code}: {r.text}")
+    except Exception as e:
+        logger.error(f"Eccezione Notion: {e}")
+
+
+# ─── Keyboard / testo ─────────────────────────────────────────────────────────
 
 def build_keyboard(msg_id: int) -> InlineKeyboardMarkup:
     dati     = TRASCRIZIONI.get(msg_id, {})
@@ -52,7 +100,6 @@ def build_testo(msg_id: int) -> str:
     stato    = dati.get("stato") or ""
     priorita = dati.get("priorita") or ""
 
-    # Badge emoji davanti al testo (ricercabile)
     badge = "".join(filter(None, [stato, priorita]))
     riga_testo = f"{badge} {testo}" if badge else testo
 
@@ -60,6 +107,8 @@ def build_testo(msg_id: int) -> str:
         return f"🏷️ *{titolo}*\n\n{riga_testo}"
     return riga_testo
 
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def is_authorized(update: Update) -> bool:
     if ALLOWED_USER_ID == 0:
@@ -89,6 +138,8 @@ async def transcribe_and_title(file_path: str, mime_type: str = "audio/ogg") -> 
     return titolo, trascrizione
 
 
+# ─── Audio processing ─────────────────────────────────────────────────────────
+
 async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE,
                         file_id: str, suffix: str, mime_type: str, label: str):
     if not is_authorized(update):
@@ -112,6 +163,9 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE,
             "priorita": None,
         }
 
+        # Salva su Notion in background
+        crea_pagina_notion(titolo, trascrizione)
+
         await msg.edit_text(
             build_testo(msg.message_id),
             parse_mode="Markdown",
@@ -129,6 +183,8 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 pass
 
 
+# ─── Callback bottoni ─────────────────────────────────────────────────────────
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -142,11 +198,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     dati = TRASCRIZIONI[msg_id]
 
-    # Gruppo 1: stato (👍 / ✅) — si escludono
     if emoji in ("👍", "✅"):
         dati["stato"] = None if dati["stato"] == emoji else emoji
-
-    # Gruppo 2: priorità (⭐ / 🗑️) — si escludono
     elif emoji in ("⭐", "🗑️"):
         dati["priorita"] = None if dati["priorita"] == emoji else emoji
 
@@ -160,14 +213,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Errore aggiornamento: {e}")
 
 
+# ─── Handlers ─────────────────────────────────────────────────────────────────
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 *Diario Vocale attivo!*\n\n"
         "Mandami un vocale 🎙️ o un file audio 📎\n\n"
+        "Trascrivo tutto, genero un titolo e salvo su Notion 📓\n\n"
         "Dopo la trascrizione puoi taggare ogni nota:\n"
         "👍 letto  |  ✅ fatto\n"
-        "⭐ importante  |  🗑️ ignora\n\n"
-        "I tag appaiono davanti al testo — cercali direttamente in chat!",
+        "⭐ importante  |  🗑️ ignora",
         parse_mode="Markdown",
     )
 
@@ -205,6 +260,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         suffix=ext, mime_type=AUDIO_EXTENSIONS[ext],
                         label=f"file `{filename}`")
 
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
