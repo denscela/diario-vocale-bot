@@ -63,9 +63,10 @@ async def crea_pagina_notion(titolo: str, testo: str):
                 "object": "block",
                 "type": "paragraph",
                 "paragraph": {
-                    "rich_text": [{"text": {"content": testo}}]
+                    "rich_text": [{"text": {"content": testo[i:i+2000]}}]
                 }
             }
+            for i in range(0, len(testo), 2000)
         ]
     }
     try:
