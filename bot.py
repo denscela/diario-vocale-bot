@@ -116,6 +116,26 @@ def build_testo(msg_id: int) -> str:
     return f"{header}{riga_testo}" if titolo else riga_testo
 
 
+def build_testo_plain(msg_id: int) -> str:
+    dati     = TRASCRIZIONI.get(msg_id, {})
+    titolo   = dati.get("titolo", "")
+    testo    = dati.get("testo", "")
+    stato    = dati.get("stato") or ""
+    priorita = dati.get("priorita") or ""
+
+    badge = "".join(filter(None, [stato, priorita]))
+    riga_testo = f"{badge} {testo}" if badge else testo
+
+    header = f"🏷️ {titolo}\n\n" if titolo else ""
+    nota = "\n\n…testo completo su Notion 📓"
+    MAX = 4096 - len(header) - len(nota)
+
+    if len(riga_testo) > MAX:
+        riga_testo = riga_testo[:MAX] + nota
+
+    return f"{header}{riga_testo}" if titolo else riga_testo
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def is_authorized(update: Update) -> bool:
@@ -281,11 +301,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "tipo": "testo",  # flag per Notion condizionale
     }
 
-    await msg.edit_text(
-        build_testo(msg.message_id),
-        parse_mode="Markdown",
-        reply_markup=build_keyboard(msg.message_id)
-    )
+    try:
+        await msg.edit_text(
+            build_testo(msg.message_id),
+            parse_mode="Markdown",
+            reply_markup=build_keyboard(msg.message_id)
+        )
+    except Exception:
+        # Fallback senza Markdown (es. link con caratteri speciali)
+        await msg.edit_text(
+            build_testo_plain(msg.message_id),
+            reply_markup=build_keyboard(msg.message_id)
+        )
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
