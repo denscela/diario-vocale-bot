@@ -231,16 +231,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif emoji in ("⭐", "🗑️"):
         dati["priorita"] = None if dati["priorita"] == emoji else emoji
 
-    # Salva su Notion solo per testi, solo su ⭐ o ✅
-    if dati.get("tipo") == "testo" and emoji in ("⭐", "✅") and (dati.get("stato") == emoji or dati.get("priorita") == emoji):
-        await crea_pagina_notion(dati["titolo"], dati["testo"])
+    # Salva su Notion solo per testi, solo su ⭐ o ✅, solo quando viene ATTIVATO (non rimosso)
+    if dati.get("tipo") == "testo" and emoji in ("⭐", "✅"):
+        attivo = dati.get("stato") == emoji or dati.get("priorita") == emoji
+        if attivo:
+            await crea_pagina_notion(dati["titolo"], dati["testo"])
 
+    tipo = TRASCRIZIONI[msg_id].get("tipo")
     try:
-        await query.message.edit_text(
-            build_testo(msg_id),
-            parse_mode="Markdown",
-            reply_markup=build_keyboard(msg_id)
-        )
+        if tipo == "testo":
+            await query.message.edit_text(
+                build_testo_plain(msg_id),
+                reply_markup=build_keyboard(msg_id)
+            )
+        else:
+            await query.message.edit_text(
+                build_testo(msg_id),
+                parse_mode="Markdown",
+                reply_markup=build_keyboard(msg_id)
+            )
     except Exception as e:
         logger.error(f"Errore aggiornamento: {e}")
 
