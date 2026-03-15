@@ -293,6 +293,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = await update.message.reply_text("📝 Salvato!")
 
+    # Cancella il messaggio originale dell'utente
+    try:
+        await update.message.delete()
+    except Exception:
+        pass  # Se non ha i permessi, ignora
+
     TRASCRIZIONI[msg.message_id] = {
         "titolo": titolo,
         "testo": testo,
