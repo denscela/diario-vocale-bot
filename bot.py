@@ -131,8 +131,8 @@ async def transcribe_and_title(file_path: str, mime_type: str = "audio/ogg") -> 
         uploaded,
         "Analizza questo audio e rispondi in questo formato esatto:\n"
         "TITOLO: [massimo 6 parole che riassumono il contenuto]\n"
-        "TRASCRIZIONE: [trascrizione fedele parola per parola in italiano]\n\n"
-        "Non aggiungere altro."
+        "TRASCRIZIONE: [trascrizione fedele parola per parola, testo continuo senza timestamp, senza etichette speaker, senza interruzioni]\n\n"
+        "Non aggiungere timestamp, orari, nomi speaker o formattazioni. Solo testo continuo."
     ])
     text = response.text.strip()
     titolo = ""
@@ -211,6 +211,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif emoji in ("⭐", "🗑️"):
         dati["priorita"] = None if dati["priorita"] == emoji else emoji
 
+    # Salva su Notion solo per testi, solo su ⭐ o ✅
+    if dati.get("tipo") == "testo" and emoji in ("⭐", "✅") and (dati.get("stato") == emoji or dati.get("priorita") == emoji):
+        await crea_pagina_notion(dati["titolo"], dati["testo"])
+
     try:
         await query.message.edit_text(
             build_testo(msg_id),
@@ -226,9 +230,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 *Diario Vocale attivo!*\n\n"
-        "Mandami un vocale 🎙️ o un file audio 📎\n\n"
-        "Trascrivo tutto, genero un titolo e salvo su Notion 📓\n\n"
-        "Dopo la trascrizione puoi taggare ogni nota:\n"
+        "Mandami un vocale 🎙️ o un file audio 📎\n"
+        "Oppure scrivi/incolla un testo o link 📝\n\n"
+        "Trascrivo i vocali e salvo su Notion 📓\n"
+        "I testi vengono salvati su Notion solo se taggi ⭐ o ✅\n\n"
+        "Bottoni tag:\n"
         "👍 letto  |  ✅ fatto\n"
         "⭐ importante  |  🗑️ ignora",
         parse_mode="Markdown",
@@ -250,6 +256,36 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         file_id=audio.file_id,
                         suffix=ext or ".mp3", mime_type=mime_type,
                         label=f"file `{filename}`")
+
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update):
+        await update.message.reply_text("⛔ Accesso non autorizzato.")
+        return
+
+    testo = update.message.text.strip()
+    if not testo:
+        return
+
+    # Titolo = prime 8 parole
+    parole = testo.split()
+    titolo = " ".join(parole[:8]) + ("…" if len(parole) > 8 else "")
+
+    msg = await update.message.reply_text("📝 Salvato!")
+
+    TRASCRIZIONI[msg.message_id] = {
+        "titolo": titolo,
+        "testo": testo,
+        "stato": None,
+        "priorita": None,
+        "tipo": "testo",  # flag per Notion condizionale
+    }
+
+    await msg.edit_text(
+        build_testo(msg.message_id),
+        parse_mode="Markdown",
+        reply_markup=build_keyboard(msg.message_id)
+    )
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -277,6 +313,7 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.AUDIO, handle_audio))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
     logger.info("🤖 Bot avviato — in ascolto…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
