@@ -2,6 +2,7 @@ import os
 import logging
 import tempfile
 import httpx
+import urllib.parse
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
@@ -94,6 +95,32 @@ def build_keyboard(msg_id: int) -> InlineKeyboardMarkup:
     row1 = [btn("👍", stato),    btn("✅", stato)]
     row2 = [btn("⭐", priorita), btn("🗑️", priorita)]
     return InlineKeyboardMarkup([row1, row2])
+
+
+def build_keyboard_audio(msg_id: int) -> InlineKeyboardMarkup:
+    dati     = TRASCRIZIONI.get(msg_id, {})
+    stato    = dati.get("stato")
+    priorita = dati.get("priorita")
+    testo    = dati.get("testo", "")
+
+    def btn(emoji, current):
+        prefix = "● " if emoji == current else ""
+        return InlineKeyboardButton(f"{prefix}{emoji}", callback_data=f"tag:{emoji}:{msg_id}")
+
+    row1 = [btn("👍", stato), btn("✅", stato)]
+    row2 = [btn("⭐", priorita), btn("🗑️", priorita)]
+
+    # Bottone Claude — tronca a 1800 chars per stare nel limite URL
+    testo_claude = urllib.parse.quote(testo[:1800])
+    row3 = [InlineKeyboardButton("🤖 Apri in Claude", url=f"https://claude.ai/new?q={testo_claude}")]
+
+    return InlineKeyboardMarkup([row1, row2, row3])
+
+
+def build_keyboard_link(msg_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🗃️ Archivia", callback_data=f"archivia:{msg_id}")
+    ]])
 
 
 def build_testo(msg_id: int) -> str:
@@ -197,7 +224,7 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await msg.edit_text(
             build_testo(msg.message_id),
             parse_mode="Markdown",
-            reply_markup=build_keyboard(msg.message_id)
+            reply_markup=build_keyboard_audio(msg.message_id)
         )
 
     except Exception as e:
@@ -217,6 +244,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    # Gestione archiviazione link
+    if query.data.startswith("archivia:"):
+        msg_id = int(query.data.split(":")[1])
+        dati = TRASCRIZIONI.get(msg_id)
+        if dati:
+            await crea_pagina_notion(dati["titolo"], dati["testo"])
+            try:
+                await query.message.delete()
+            except Exception as e:
+                logger.error(f"Errore cancellazione: {e}")
+            TRASCRIZIONI.pop(msg_id, None)
+        else:
+            await query.answer("⚠️ Dati non disponibili (bot riavviato?)", show_alert=True)
+        return
+
     _, emoji, msg_id_str = query.data.split(":", 2)
     msg_id = int(msg_id_str)
 
@@ -231,7 +273,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif emoji in ("⭐", "🗑️"):
         dati["priorita"] = None if dati["priorita"] == emoji else emoji
 
-    # Salva su Notion solo per testi, solo su ⭐ o ✅, solo quando viene ATTIVATO (non rimosso)
+    # Salva su Notion solo per testi, solo su ⭐ o ✅, solo quando viene ATTIVATO
     if dati.get("tipo") == "testo" and emoji in ("⭐", "✅"):
         attivo = dati.get("stato") == emoji or dati.get("priorita") == emoji
         if attivo:
@@ -239,16 +281,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     tipo = TRASCRIZIONI[msg_id].get("tipo")
     try:
-        if tipo == "testo":
+        if tipo in ("testo", "link"):
             await query.message.edit_text(
                 build_testo_plain(msg_id),
                 reply_markup=build_keyboard(msg_id)
             )
         else:
+            # Vocale/audio — usa keyboard con bottone Claude
             await query.message.edit_text(
                 build_testo(msg_id),
                 parse_mode="Markdown",
-                reply_markup=build_keyboard(msg_id)
+                reply_markup=build_keyboard_audio(msg_id)
             )
     except Exception as e:
         logger.error(f"Errore aggiornamento: {e}")
@@ -296,6 +339,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not testo:
         return
 
+    # Rileva se è un link
+    is_link = testo.startswith("http://") or testo.startswith("https://")
+
     # Titolo = prime 8 parole
     parole = testo.split()
     titolo = " ".join(parole[:8]) + ("…" if len(parole) > 8 else "")
@@ -306,28 +352,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.delete()
     except Exception:
-        pass  # Se non ha i permessi, ignora
+        pass
 
     TRASCRIZIONI[msg.message_id] = {
         "titolo": titolo,
         "testo": testo,
         "stato": None,
         "priorita": None,
-        "tipo": "testo",  # flag per Notion condizionale
+        "tipo": "link" if is_link else "testo",
     }
+
+    keyboard = build_keyboard_link(msg.message_id) if is_link else build_keyboard(msg.message_id)
 
     try:
         await msg.edit_text(
-            build_testo(msg.message_id),
-            parse_mode="Markdown",
-            reply_markup=build_keyboard(msg.message_id)
-        )
-    except Exception:
-        # Fallback senza Markdown (es. link con caratteri speciali)
-        await msg.edit_text(
             build_testo_plain(msg.message_id),
-            reply_markup=build_keyboard(msg.message_id)
+            reply_markup=keyboard
         )
+    except Exception as e:
+        logger.error(f"Errore handle_text: {e}")
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
