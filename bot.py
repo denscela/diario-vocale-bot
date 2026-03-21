@@ -276,6 +276,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data.startswith("archivia:"):
         msg_id = int(query.data.split(":")[1])
         dati = TRASCRIZIONI.get(msg_id)
+        if not dati:
+            # Fallback: recupera il testo direttamente dal messaggio (sopravvive ai restart)
+            testo_msg = query.message.text or ""
+            if testo_msg:
+                dati = {"titolo": "", "testo": testo_msg}
         if dati:
             await crea_pagina_notion(dati["titolo"], dati["testo"])
             await invia_all_archivio(dati["testo"], dati["titolo"])
@@ -285,7 +290,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Errore cancellazione: {e}")
             TRASCRIZIONI.pop(msg_id, None)
         else:
-            await query.answer("⚠️ Dati non disponibili (bot riavviato?)", show_alert=True)
+            await query.answer("⚠️ Dati non disponibili.", show_alert=True)
         return
 
     _, emoji, msg_id_str = query.data.split(":", 2)
