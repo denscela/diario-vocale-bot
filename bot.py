@@ -11,11 +11,13 @@ import google.generativeai as genai
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN  = os.environ["TELEGRAM_TOKEN"]
-GEMINI_API_KEY  = os.environ["GEMINI_API_KEY"]
-ALLOWED_USER_ID = int(os.environ.get("ALLOWED_USER_ID", "0"))
-NOTION_TOKEN    = os.environ.get("NOTION_TOKEN", "")
-NOTION_PAGE_ID  = os.environ.get("NOTION_PAGE_ID", "")
+TELEGRAM_TOKEN      = os.environ["TELEGRAM_TOKEN"]
+GEMINI_API_KEY      = os.environ["GEMINI_API_KEY"]
+ALLOWED_USER_ID     = int(os.environ.get("ALLOWED_USER_ID", "0"))
+NOTION_TOKEN        = os.environ.get("NOTION_TOKEN", "")
+NOTION_PAGE_ID      = os.environ.get("NOTION_PAGE_ID", "")
+ARCHIVE_BOT_TOKEN   = os.environ.get("ARCHIVE_BOT_TOKEN", "")
+ARCHIVE_CHAT_ID     = 166521454  # ID Telegram di Den
 
 genai.configure(api_key=GEMINI_API_KEY)
 
@@ -34,7 +36,33 @@ AUDIO_EXTENSIONS = {
 TRASCRIZIONI: dict[int, dict] = {}
 
 
-# ─── Notion ──────────────────────────────────────────────────────────────────
+# ─── Archivio Bot 2 ──────────────────────────────────────────────────────────
+
+async def invia_all_archivio(testo: str, titolo: str):
+    """Invia il messaggio al Bot 2 (archivio)."""
+    if not ARCHIVE_BOT_TOKEN:
+        logger.warning("ARCHIVE_BOT_TOKEN non configurato.")
+        return
+    oggi = datetime.now().strftime("%Y-%m-%d %H:%M")
+    testo_archivio = f"🗃️ *{titolo}*\n_{oggi}_\n\n{testo}" if titolo else f"🗃️ _{oggi}_\n\n{testo}"
+    url = f"https://api.telegram.org/bot{ARCHIVE_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": ARCHIVE_CHAT_ID,
+        "text": testo_archivio[:4096],
+        "parse_mode": "Markdown"
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(url, json=payload)
+        if r.status_code == 200:
+            logger.info("✅ Messaggio inviato all'archivio")
+        else:
+            logger.error(f"❌ Errore archivio {r.status_code}: {r.text}")
+    except Exception as e:
+        logger.error(f"❌ Eccezione archivio: {e}")
+
+
+# ─── Notion ───────────────────────────────────────────────────────────────────
 
 async def crea_pagina_notion(titolo: str, testo: str):
     """Crea una sotto-pagina in NOTION_PAGE_ID con titolo data+titolo e corpo testo."""
@@ -250,6 +278,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         dati = TRASCRIZIONI.get(msg_id)
         if dati:
             await crea_pagina_notion(dati["titolo"], dati["testo"])
+            await invia_all_archivio(dati["testo"], dati["titolo"])
             try:
                 await query.message.delete()
             except Exception as e:
