@@ -37,21 +37,32 @@ TRASCRIZIONI: dict[int, dict] = {}
 
 # ─── Archivio Bot 2 ──────────────────────────────────────────────────────────
 
-async def invia_audio_archivio(file_id: str):
-    """Invia l'audio originale al Bot 2 (archivio)."""
+async def invia_audio_archivio(file_id: str, context_bot):
+    """Scarica l'audio dal Bot 1 e lo reinvia al Bot 2 (archivio)."""
     if not ARCHIVE_BOT_TOKEN:
         return
-    url = f"https://api.telegram.org/bot{ARCHIVE_BOT_TOKEN}/sendAudio"
-    payload = {"chat_id": ARCHIVE_CHAT_ID, "audio": file_id}
+    tmp_path = None
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.post(url, json=payload)
+        file = await context_bot.get_file(file_id)
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            tmp_path = tmp.name
+        await file.download_to_drive(tmp_path)
+        url = f"https://api.telegram.org/bot{ARCHIVE_BOT_TOKEN}/sendVoice"
+        with open(tmp_path, "rb") as audio_file:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.post(url, data={"chat_id": ARCHIVE_CHAT_ID}, files={"voice": audio_file})
         if r.status_code == 200:
             logger.info("✅ Audio inviato all'archivio")
         else:
             logger.error(f"❌ Errore invio audio {r.status_code}: {r.text}")
     except Exception as e:
         logger.error(f"❌ Eccezione invio audio: {e}")
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 
 async def invia_all_archivio(testo: str, titolo: str):
@@ -297,7 +308,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 dati = {"titolo": "", "testo": testo_msg}
         if dati:
             if dati.get("file_id"):
-                await invia_audio_archivio(dati["file_id"])
+                await invia_audio_archivio(dati["file_id"], context.bot)
             await crea_pagina_notion(dati["titolo"], dati["testo"])
             await invia_all_archivio(dati["testo"], dati["titolo"])
             try:
