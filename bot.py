@@ -37,6 +37,23 @@ TRASCRIZIONI: dict[int, dict] = {}
 
 # ─── Archivio Bot 2 ──────────────────────────────────────────────────────────
 
+async def invia_audio_archivio(file_id: str):
+    """Invia l'audio originale al Bot 2 (archivio)."""
+    if not ARCHIVE_BOT_TOKEN:
+        return
+    url = f"https://api.telegram.org/bot{ARCHIVE_BOT_TOKEN}/sendAudio"
+    payload = {"chat_id": ARCHIVE_CHAT_ID, "audio": file_id}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(url, json=payload)
+        if r.status_code == 200:
+            logger.info("✅ Audio inviato all'archivio")
+        else:
+            logger.error(f"❌ Errore invio audio {r.status_code}: {r.text}")
+    except Exception as e:
+        logger.error(f"❌ Eccezione invio audio: {e}")
+
+
 async def invia_all_archivio(testo: str, titolo: str):
     """Invia il messaggio al Bot 2 (archivio)."""
     if not ARCHIVE_BOT_TOKEN:
@@ -239,6 +256,8 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE,
             "testo": trascrizione,
             "stato": None,
             "priorita": None,
+            "tipo": "audio",
+            "file_id": file_id,
         }
 
         # Salva su Notion (asincrono)
@@ -277,6 +296,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if testo_msg:
                 dati = {"titolo": "", "testo": testo_msg}
         if dati:
+            if dati.get("file_id"):
+                await invia_audio_archivio(dati["file_id"])
             await crea_pagina_notion(dati["titolo"], dati["testo"])
             await invia_all_archivio(dati["testo"], dati["titolo"])
             try:
