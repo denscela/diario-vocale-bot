@@ -2,7 +2,6 @@ import os
 import logging
 import tempfile
 import httpx
-import urllib.parse
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
@@ -129,7 +128,6 @@ def build_keyboard_audio(msg_id: int) -> InlineKeyboardMarkup:
     dati     = TRASCRIZIONI.get(msg_id, {})
     stato    = dati.get("stato")
     priorita = dati.get("priorita")
-    testo    = dati.get("testo", "")
 
     def btn(emoji, current):
         prefix = "● " if emoji == current else ""
@@ -137,10 +135,7 @@ def build_keyboard_audio(msg_id: int) -> InlineKeyboardMarkup:
 
     row1 = [btn("👍", stato), btn("✅", stato)]
     row2 = [btn("⭐", priorita), btn("🗑️", priorita)]
-
-    # Bottone Claude — tronca a 1800 chars per stare nel limite URL
-    testo_claude = urllib.parse.quote(testo[:1800])
-    row3 = [InlineKeyboardButton("🤖 Apri in Claude", url=f"https://claude.ai/new?q={testo_claude}")]
+    row3 = [InlineKeyboardButton("🗃️ Archivia", callback_data=f"archivia:{msg_id}")]
 
     return InlineKeyboardMarkup([row1, row2, row3])
 
