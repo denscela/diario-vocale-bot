@@ -269,6 +269,7 @@ async def process_audio(update: Update, context: ContextTypes.DEFAULT_TYPE,
             "priorita": None,
             "tipo": "audio",
             "file_id": file_id,
+            "original_msg_id": update.message.message_id,
         }
 
         # Salva su Notion (asincrono)
@@ -314,7 +315,15 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await query.message.delete()
             except Exception as e:
-                logger.error(f"Errore cancellazione: {e}")
+                logger.error(f"Errore cancellazione trascrizione: {e}")
+            if dati.get("original_msg_id"):
+                try:
+                    await context.bot.delete_message(
+                        chat_id=query.message.chat_id,
+                        message_id=dati["original_msg_id"]
+                    )
+                except Exception as e:
+                    logger.error(f"Errore cancellazione vocale originale: {e}")
             TRASCRIZIONI.pop(msg_id, None)
         else:
             await query.answer("⚠️ Dati non disponibili.", show_alert=True)
